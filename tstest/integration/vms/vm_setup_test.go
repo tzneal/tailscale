@@ -30,6 +30,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/pkg/sftp"
 	"golang.org/x/crypto/ssh"
+	"tailscale.com/tstest/integration"
 	"tailscale.com/types/logger"
 )
 
@@ -290,7 +291,6 @@ func checkCachedImageHash(t *testing.T, d Distro, cacheDir string) string {
 }
 
 func (h *Harness) copyBinaries(t *testing.T, d Distro, conn *ssh.Client) {
-	bins := h.bins
 	if strings.HasPrefix(d.Name, "nixos") {
 		return
 	}
@@ -305,8 +305,8 @@ func (h *Harness) copyBinaries(t *testing.T, d Distro, conn *ssh.Client) {
 	mkdir(t, cli, "/etc/default")
 	mkdir(t, cli, "/var/lib/tailscale")
 
-	copyFile(t, cli, bins.Daemon, "/usr/sbin/tailscaled")
-	copyFile(t, cli, bins.CLI, "/usr/bin/tailscale")
+	copyFile(t, cli, integration.Binaries.Daemon, "/usr/sbin/tailscaled")
+	copyFile(t, cli, integration.Binaries.CLI, "/usr/bin/tailscale")
 
 	// TODO(Xe): revisit this assumption before it breaks the test.
 	copyFile(t, cli, "../../../cmd/tailscaled/tailscaled.defaults", "/etc/default/tailscaled")

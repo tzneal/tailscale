@@ -51,7 +51,12 @@ func TestMain(m *testing.M) {
 	// Have to disable UPnP which hits the network, otherwise it fails due to HTTP proxy.
 	os.Setenv("TS_DISABLE_UPNP", "true")
 	flag.Parse()
+	err, cleanup := BuildTestBinaries()
+	if err != nil {
+		log.Fatal(err)
+	}
 	v := m.Run()
+	cleanup()
 	if v != 0 {
 		os.Exit(v)
 	}
@@ -64,9 +69,7 @@ func TestMain(m *testing.M) {
 
 func TestOneNodeUp_NoAuth(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 
 	d1 := n1.StartDaemon(t)
@@ -83,9 +86,7 @@ func TestOneNodeUp_NoAuth(t *testing.T) {
 
 func TestOneNodeExpiredKey(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 
 	d1 := n1.StartDaemon(t)
@@ -121,12 +122,10 @@ func TestOneNodeExpiredKey(t *testing.T) {
 
 func TestCollectPanic(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n := newTestNode(t, env)
 
-	cmd := exec.Command(n.env.Binaries.Daemon, "--cleanup")
+	cmd := exec.Command(Binaries.Daemon, "--cleanup")
 	cmd.Env = append(os.Environ(),
 		"TS_PLEASE_PANIC=1",
 		"TS_LOG_TARGET="+n.env.LogCatcherServer.URL,
@@ -135,7 +134,7 @@ func TestCollectPanic(t *testing.T) {
 	t.Logf("initial run: %s", got)
 
 	// Now we run it again, and on start, it will upload the logs to logcatcher.
-	cmd = exec.Command(n.env.Binaries.Daemon, "--cleanup")
+	cmd = exec.Command(Binaries.Daemon, "--cleanup")
 	cmd.Env = append(os.Environ(), "TS_LOG_TARGET="+n.env.LogCatcherServer.URL)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("cleanup failed: %v: %q", err, out)
@@ -154,9 +153,7 @@ func TestCollectPanic(t *testing.T) {
 // test Issue 2321: Start with UpdatePrefs should save prefs to disk
 func TestStateSavedOnStart(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 
 	d1 := n1.StartDaemon(t)
@@ -192,9 +189,7 @@ func TestStateSavedOnStart(t *testing.T) {
 
 func TestOneNodeUp_Auth(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins, configureControl(func(control *testcontrol.Server) {
+	env := newTestEnv(t, configureControl(func(control *testcontrol.Server) {
 		control.RequireAuth = true
 	}))
 
@@ -237,9 +232,7 @@ func TestOneNodeUp_Auth(t *testing.T) {
 
 func TestTwoNodes(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 
 	// Create two nodes:
 	n1 := newTestNode(t, env)
@@ -285,9 +278,7 @@ func TestTwoNodes(t *testing.T) {
 
 func TestNodeAddressIPFields(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 	d1 := n1.StartDaemon(t)
 
@@ -313,9 +304,7 @@ func TestNodeAddressIPFields(t *testing.T) {
 
 func TestAddPingRequest(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 	n1.StartDaemon(t)
 
@@ -369,9 +358,7 @@ func TestAddPingRequest(t *testing.T) {
 // be connected to control.
 func TestNoControlConnWhenDown(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 
 	d1 := n1.StartDaemon(t)
@@ -412,9 +399,7 @@ func TestNoControlConnWhenDown(t *testing.T) {
 // without the GUI to kick off a Start.
 func TestOneNodeUpWindowsStyle(t *testing.T) {
 	t.Parallel()
-	bins := BuildTestBinaries(t)
-
-	env := newTestEnv(t, bins)
+	env := newTestEnv(t)
 	n1 := newTestNode(t, env)
 	n1.upFlagGOOS = "windows"
 
@@ -431,8 +416,7 @@ func TestOneNodeUpWindowsStyle(t *testing.T) {
 // testEnv contains the test environment (set of servers) used by one
 // or more nodes.
 type testEnv struct {
-	t        testing.TB
-	Binaries *Binaries
+	t testing.TB
 
 	LogCatcher       *LogCatcher
 	LogCatcherServer *httptest.Server
@@ -456,7 +440,7 @@ func (f configureControl) modifyTestEnv(te *testEnv) {
 
 // newTestEnv starts a bunch of services and returns a new test environment.
 // newTestEnv arranges for the environment's resources to be cleaned up on exit.
-func newTestEnv(t testing.TB, bins *Binaries, opts ...testEnvOpt) *testEnv {
+func newTestEnv(t testing.TB, opts ...testEnvOpt) *testEnv {
 	if runtime.GOOS == "windows" {
 		t.Skip("not tested/working on Windows yet")
 	}
@@ -469,7 +453,6 @@ func newTestEnv(t testing.TB, bins *Binaries, opts ...testEnvOpt) *testEnv {
 	trafficTrap := new(trafficTrap)
 	e := &testEnv{
 		t:                 t,
-		Binaries:          bins,
 		LogCatcher:        logc,
 		LogCatcherServer:  httptest.NewServer(logc),
 		Control:           control,
@@ -666,7 +649,7 @@ func (n *testNode) StartDaemon(t testing.TB) *Daemon {
 }
 
 func (n *testNode) StartDaemonAsIPNGOOS(t testing.TB, ipnGOOS string) *Daemon {
-	cmd := exec.Command(n.env.Binaries.Daemon,
+	cmd := exec.Command(Binaries.Daemon,
 		"--tun=userspace-networking",
 		"--state="+n.stateFile,
 		"--socket="+n.sockFile,
@@ -805,7 +788,7 @@ func (n *testNode) AwaitNeedsLogin(t testing.TB) {
 // Tailscale returns a command that runs the tailscale CLI with the provided arguments.
 // It does not start the process.
 func (n *testNode) Tailscale(arg ...string) *exec.Cmd {
-	cmd := exec.Command(n.env.Binaries.CLI, "--socket="+n.sockFile)
+	cmd := exec.Command(Binaries.CLI, "--socket="+n.sockFile)
 	cmd.Args = append(cmd.Args, arg...)
 	cmd.Dir = n.dir
 	cmd.Env = append(os.Environ(),

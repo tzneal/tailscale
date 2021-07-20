@@ -12,6 +12,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -30,6 +31,7 @@ import (
 	"golang.org/x/sync/semaphore"
 	"inet.af/netaddr"
 	"tailscale.com/tstest"
+	"tailscale.com/tstest/integration"
 	"tailscale.com/types/logger"
 )
 
@@ -51,6 +53,17 @@ var (
 		return result
 	}()
 )
+
+func TestMain(m *testing.M) {
+	flag.Parse()
+	err, cleanup := integration.BuildTestBinaries()
+	if err != nil {
+		log.Fatal(err)
+	}
+	v := m.Run()
+	cleanup()
+	os.Exit(v)
+}
 
 func TestDownloadImages(t *testing.T) {
 	if !*runVMTests {
