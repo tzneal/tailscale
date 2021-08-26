@@ -315,9 +315,6 @@ func run() error {
 	}
 	ns.ProcessLocalIPs = useNetstack
 	ns.ProcessSubnets = useNetstack || wrapNetstack
-	if err := ns.Start(); err != nil {
-		log.Fatalf("failed to start netstack: %v", err)
-	}
 
 	if socksListener != nil || httpProxyListener != nil {
 		srv := tssocks.NewServer(logger.WithPrefix(logf, "socks5: "), e, ns)
@@ -366,9 +363,13 @@ func run() error {
 		logf("ipnserver.New: %v", err)
 		return err
 	}
-
+	ns.SetLocalBackend(srv.LocalBackend())
 	if debugMux != nil {
 		debugMux.HandleFunc("/debug/ipn", srv.ServeHTMLStatus)
+	}
+
+	if err := ns.Start(); err != nil {
+		log.Fatalf("failed to start netstack: %v", err)
 	}
 
 	ln, _, err := safesocket.Listen(args.socketpath, safesocket.WindowsLocalPort)

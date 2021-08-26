@@ -38,6 +38,7 @@ import (
 	"tailscale.com/net/tsaddr"
 	"tailscale.com/paths"
 	"tailscale.com/portlist"
+	"tailscale.com/syncs"
 	"tailscale.com/tailcfg"
 	"tailscale.com/types/dnstype"
 	"tailscale.com/types/empty"
@@ -97,6 +98,7 @@ type LocalBackend struct {
 	serverURL             string           // tailcontrol URL
 	newDecompressor       func() (controlclient.Decompressor, error)
 	varRoot               string // or empty if SetVarRoot never called
+	sshAtomicBool         syncs.AtomicBool
 
 	filterHash deephash.Sum
 
@@ -1468,6 +1470,9 @@ func (b *LocalBackend) loadStateLocked(key ipn.StateKey, prefs *ipn.Prefs) (err 
 	}
 
 	b.logf("backend prefs for %q: %s", key, b.prefs.Pretty())
+
+	b.sshAtomicBool.Set(b.prefs != nil && b.prefs.RunSSH)
+
 	return nil
 }
 
@@ -1640,6 +1645,8 @@ func (b *LocalBackend) SetPrefs(newp *ipn.Prefs) {
 func (b *LocalBackend) setPrefsLockedOnEntry(caller string, newp *ipn.Prefs) {
 	netMap := b.netMap
 	stateKey := b.stateKey
+
+	b.sshAtomicBool.Set(newp.RunSSH)
 
 	oldp := b.prefs
 	newp.Persist = oldp.Persist // caller isn't allowed to override this
@@ -2512,7 +2519,10 @@ func (b *LocalBackend) ResetForClientDisconnect() {
 	b.authURL = ""
 	b.authURLSticky = ""
 	b.activeLogin = ""
+	b.sshAtomicBool.Set(false)
 }
+
+func (b *LocalBackend) ShouldRunSSH() bool { return b.sshAtomicBool.Get() }
 
 // Logout tells the controlclient that we want to log out, and
 // transitions the local engine to the logged-out state without
