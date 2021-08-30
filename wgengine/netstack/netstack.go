@@ -42,7 +42,7 @@ import (
 	"tailscale.com/wgengine/magicsock"
 )
 
-const debugNetstack = false
+const debugNetstack = true
 
 // Impl contains the state for the netstack implementation,
 // and implements wgengine.FakeImpl to act as a userspace network
@@ -54,13 +54,17 @@ type Impl struct {
 	// port other than accepting it and closing it.
 	ForwardTCPIn func(c net.Conn, port uint16)
 
-	ipstack     *stack.Stack
-	linkEP      *channel.Endpoint
-	tundev      *tstun.Wrapper
-	e           wgengine.Engine
-	mc          *magicsock.Conn
-	logf        logger.Logf
-	onlySubnets bool // whether we only want to handle subnet relaying
+	ipstack *stack.Stack
+	linkEP  *channel.Endpoint
+	tundev  *tstun.Wrapper
+	e       wgengine.Engine
+	mc      *magicsock.Conn
+	logf    logger.Logf
+
+	ProcessAll     bool
+	ProcessSubnets bool // whether we only want to handle subnet relaying
+
+	ForwardAllTrafficTo atomic.Value // of netaddr.IP
 
 	// atomicIsLocalIPFunc holds a func that reports whether an IP
 	// is a local (non-subnet) Tailscale IP address of this
@@ -81,7 +85,7 @@ const nicID = 1
 const mtu = 1500
 
 // Create creates and populates a new Impl.
-func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magicsock.Conn, onlySubnets bool) (*Impl, error) {
+func Create(logf logger.Logf, tundev *tstun.Wrapper, mc *magicsock.Conn) (*Impl, error) {
 	if mc == nil {
 		return nil, errors.New("nil magicsock.Conn")
 	}
@@ -90,9 +94,6 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 	}
 	if logf == nil {
 		return nil, errors.New("nil logger")
-	}
-	if e == nil {
-		return nil, errors.New("nil Engine")
 	}
 	ipstack := stack.New(stack.Options{
 		NetworkProtocols:   []stack.NetworkProtocolFactory{ipv4.NewProtocol, ipv6.NewProtocol},
@@ -127,11 +128,10 @@ func Create(logf logger.Logf, tundev *tstun.Wrapper, e wgengine.Engine, mc *magi
 		ipstack:             ipstack,
 		linkEP:              linkEP,
 		tundev:              tundev,
-		e:                   e,
 		mc:                  mc,
 		connsOpenBySubnetIP: make(map[netaddr.IP]int),
-		onlySubnets:         onlySubnets,
 	}
+	ns.ForwardAllTrafficTo.Store(netaddr.IPv4(127, 0, 0, 1))
 	ns.atomicIsLocalIPFunc.Store(tsaddr.NewContainsIPFunc(nil))
 	return ns, nil
 }
@@ -156,7 +156,11 @@ func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.Packet
 
 // Start sets up all the handlers so netstack can start working. Implements
 // wgengine.FakeImpl.
-func (ns *Impl) Start() error {
+func (ns *Impl) Start(e wgengine.Engine) error {
+	if e == nil {
+		return errors.New("nil Engine")
+	}
+	ns.e = e
 	ns.e.AddNetworkMapCallback(ns.updateIPs)
 	// size = 0 means use default buffer size
 	const tcpReceiveBufferSize = 0
@@ -265,9 +269,6 @@ func (ns *Impl) updateIPs(nm *netmap.NetworkMap) {
 		isAddr[ipp] = true
 	}
 	for _, ipp := range nm.SelfNode.AllowedIPs {
-		if ns.onlySubnets && isAddr[ipp] {
-			continue
-		}
 		newIPs[ipPrefixToAddressWithPrefix(ipp)] = true
 	}
 
@@ -436,11 +437,19 @@ func (ns *Impl) isLocalIP(ip netaddr.IP) bool {
 	return ns.atomicIsLocalIPFunc.Load().(func(netaddr.IP) bool)(ip)
 }
 
+func (ns *Impl) shouldProcessInbound(p *packet.Parsed, t *tstun.Wrapper) bool {
+	if ns.ProcessAll {
+		return true
+	}
+	if ns.ProcessSubnets && ns.isLocalIP(p.Dst.IP()) {
+		return true
+	}
+	return false
+}
+
 func (ns *Impl) injectInbound(p *packet.Parsed, t *tstun.Wrapper) filter.Response {
-	if ns.onlySubnets && ns.isLocalIP(p.Dst.IP()) {
-		// In hybrid ("only subnets") mode, bail out early if
-		// the traffic is destined for an actual Tailscale
-		// address. The real host OS interface will handle it.
+	if !ns.shouldProcessInbound(p, t) {
+		// Let host network stack (if any) deal with it.
 		return filter.Accept
 	}
 	var pn tcpip.NetworkProtocolNumber
@@ -524,7 +533,7 @@ func (ns *Impl) acceptTCP(r *tcp.ForwarderRequest) {
 		return
 	}
 	if isTailscaleIP {
-		dialIP = netaddr.IPv4(127, 0, 0, 1)
+		dialIP = ns.ForwardAllTrafficTo.Load().(netaddr.IP)
 	}
 	dialAddr := netaddr.IPPortFrom(dialIP, uint16(reqDetails.LocalPort))
 	ns.forwardTCP(c, clientRemoteIP, &wq, dialAddr)
@@ -614,17 +623,22 @@ func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, 
 	var backendListenAddr *net.UDPAddr
 	var backendRemoteAddr *net.UDPAddr
 	isLocal := ns.isLocalIP(dstAddr.IP())
+	forwardDest := ns.ForwardAllTrafficTo.Load().(netaddr.IP)
 	if isLocal {
-		backendRemoteAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(port)}
-		backendListenAddr = &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(srcPort)}
+		backendRemoteAddr = &net.UDPAddr{IP: forwardDest.IPAddr().IP, Port: int(port)}
 	} else {
 		backendRemoteAddr = dstAddr.UDPAddr()
+	}
+
+	listenIP := netaddr.IPv4(127, 0, 0, 1)
+	if !isLocal || forwardDest != listenIP {
 		if dstAddr.IP().Is4() {
-			backendListenAddr = &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: int(srcPort)}
+			listenIP = netaddr.IPv4(0, 0, 0, 0)
 		} else {
-			backendListenAddr = &net.UDPAddr{IP: net.ParseIP("::"), Port: int(srcPort)}
+			listenIP = netaddr.IPv6Raw([16]byte{})
 		}
 	}
+	backendListenAddr = &net.UDPAddr{IP: listenIP.IPAddr().IP, Port: int(srcPort)}
 
 	backendConn, err := net.ListenUDP("udp", backendListenAddr)
 	if err != nil {

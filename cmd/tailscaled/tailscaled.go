@@ -291,16 +291,10 @@ func run() error {
 		}
 	}
 
-	e, useNetstack, err := createEngine(logf, linkMon)
+	e, ns, err := createEngine(logf, linkMon)
 	if err != nil {
 		logf("wgengine.New: %v", err)
 		return err
-	}
-
-	var ns *netstack.Impl
-	if useNetstack || wrapNetstack {
-		onlySubnets := wrapNetstack && !useNetstack
-		ns = mustStartNetstack(logf, e, onlySubnets)
 	}
 
 	if socksListener != nil {
@@ -333,7 +327,7 @@ func run() error {
 
 	opts := ipnServerOpts()
 	opts.DebugMux = debugMux
-	err = ipnserver.Run(ctx, logf, pol.PublicID.String(), ipnserver.FixedEngine(e), opts)
+	err = ipnserver.Run(ctx, logf, pol.PublicID.String(), ipnserver.FixedEngine(e))
 	// Cancelation is not an error: it is the only way to stop ipnserver.
 	if err != nil && err != context.Canceled {
 		logf("ipnserver.Run: %v", err)
@@ -343,21 +337,21 @@ func run() error {
 	return nil
 }
 
-func createEngine(logf logger.Logf, linkMon *monitor.Mon) (e wgengine.Engine, useNetstack bool, err error) {
+func createEngine(logf logger.Logf, linkMon *monitor.Mon) (e wgengine.Engine, ns *netstack.Impl, err error) {
 	if args.tunname == "" {
-		return nil, false, errors.New("no --tun value specified")
+		return nil, nil, errors.New("no --tun value specified")
 	}
 	var errs []error
 	for _, name := range strings.Split(args.tunname, ",") {
 		logf("wgengine.NewUserspaceEngine(tun %q) ...", name)
-		e, useNetstack, err = tryEngine(logf, linkMon, name)
+		e, ns, err = tryEngine(logf, linkMon, name)
 		if err == nil {
-			return e, useNetstack, nil
+			return e, ns, nil
 		}
 		logf("wgengine.NewUserspaceEngine(tun %q) error: %v", name, err)
 		errs = append(errs, err)
 	}
-	return nil, false, multierror.New(errs)
+	return nil, nil, multierror.New(errs)
 }
 
 var wrapNetstack = shouldWrapNetstack()
@@ -382,7 +376,7 @@ func shouldWrapNetstack() bool {
 	return false
 }
 
-func tryEngine(logf logger.Logf, linkMon *monitor.Mon, name string) (e wgengine.Engine, useNetstack bool, err error) {
+func tryEngine(logf logger.Logf, linkMon *monitor.Mon, name string) (e wgengine.Engine, ns *netstack.Impl, err error) {
 	conf := wgengine.Config{
 		ListenPort:  args.port,
 		LinkMonitor: linkMon,
@@ -394,28 +388,28 @@ func tryEngine(logf logger.Logf, linkMon *monitor.Mon, name string) (e wgengine.
 			return nil, false, err
 		}
 	}
-	useNetstack = name == "userspace-networking"
+	useNetstack := name == "userspace-networking"
 	if !useNetstack {
 		dev, devName, err := tstun.New(logf, name)
 		if err != nil {
 			tstun.Diagnose(logf, name)
-			return nil, false, err
+			return nil, nil, err
 		}
 		conf.Tun = dev
 		if strings.HasPrefix(name, "tap:") {
 			conf.IsTAP = true
 			e, err := wgengine.NewUserspaceEngine(logf, conf)
-			return e, false, err
+			return e, nil, err
 		}
 
 		r, err := router.New(logf, dev, linkMon)
 		if err != nil {
 			dev.Close()
-			return nil, false, err
+			return nil, nil, err
 		}
 		d, err := dns.NewOSConfigurator(logf, devName)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
 		conf.DNS = d
 		conf.Router = r
@@ -425,9 +419,13 @@ func tryEngine(logf logger.Logf, linkMon *monitor.Mon, name string) (e wgengine.
 	}
 	e, err = wgengine.NewUserspaceEngine(logf, conf)
 	if err != nil {
-		return nil, useNetstack, err
+		return nil, nil, err
 	}
-	return e, useNetstack, nil
+
+	ns = mustStartNetstack(logf, e)
+	ns.ProcessAll = useNetstack
+	ns.ProcessSubnets = wrapNetstack && !useNetstack
+	return e, ns, nil
 }
 
 func newDebugMux() *http.ServeMux {
@@ -450,16 +448,16 @@ func runDebugServer(mux *http.ServeMux, addr string) {
 	}
 }
 
-func mustStartNetstack(logf logger.Logf, e wgengine.Engine, onlySubnets bool) *netstack.Impl {
+func mustStartNetstack(logf logger.Logf, e wgengine.Engine) *netstack.Impl {
 	tunDev, magicConn, ok := e.(wgengine.InternalsGetter).GetInternals()
 	if !ok {
 		log.Fatalf("%T is not a wgengine.InternalsGetter", e)
 	}
-	ns, err := netstack.Create(logf, tunDev, e, magicConn, onlySubnets)
+	ns, err := netstack.Create(logf, tunDev, magicConn)
 	if err != nil {
 		log.Fatalf("netstack.Create: %v", err)
 	}
-	if err := ns.Start(); err != nil {
+	if err := ns.Start(e); err != nil {
 		log.Fatalf("failed to start netstack: %v", err)
 	}
 	return ns

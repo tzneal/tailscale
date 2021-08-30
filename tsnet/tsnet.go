@@ -147,12 +147,12 @@ func (s *Server) start() error {
 		return fmt.Errorf("%T is not a wgengine.InternalsGetter", eng)
 	}
 
-	ns, err := netstack.Create(logf, tunDev, eng, magicConn, false)
+	ns, err := netstack.Create(logf, tunDev, magicConn)
 	if err != nil {
 		return fmt.Errorf("netstack.Create: %w", err)
 	}
 	ns.ForwardTCPIn = s.forwardTCP
-	if err := ns.Start(); err != nil {
+	if err := ns.Start(eng); err != nil {
 		return fmt.Errorf("failed to start netstack: %w", err)
 	}
 

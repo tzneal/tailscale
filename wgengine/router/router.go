@@ -70,6 +70,8 @@ type Config struct {
 	SubnetRoutes     []netaddr.IPPrefix     // subnets being advertised to other Tailscale nodes
 	SNATSubnetRoutes bool                   // SNAT traffic to local subnets
 	NetfilterMode    preftype.NetfilterMode // how much to manage netfilter rules
+
+	ForwardAddress netaddr.IP
 }
 
 // shutdownConfig is a routing configuration that removes all router
