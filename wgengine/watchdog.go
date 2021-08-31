@@ -119,14 +119,8 @@ func (e *watchdogEngine) DiscoPublicKey() (k tailcfg.DiscoKey) {
 func (e *watchdogEngine) Ping(ip netaddr.IP, useTSMP bool, cb func(*ipnstate.PingResult)) {
 	e.watchdog("Ping", func() { e.wrap.Ping(ip, useTSMP, cb) })
 }
-func (e *watchdogEngine) RegisterIPPortIdentity(ipp netaddr.IPPort, tsIP netaddr.IP) {
-	e.watchdog("RegisterIPPortIdentity", func() { e.wrap.RegisterIPPortIdentity(ipp, tsIP) })
-}
-func (e *watchdogEngine) UnregisterIPPortIdentity(ipp netaddr.IPPort) {
-	e.watchdog("UnregisterIPPortIdentity", func() { e.wrap.UnregisterIPPortIdentity(ipp) })
-}
 func (e *watchdogEngine) WhoIsIPPort(ipp netaddr.IPPort) (tsIP netaddr.IP, ok bool) {
-	e.watchdog("UnregisterIPPortIdentity", func() { tsIP, ok = e.wrap.WhoIsIPPort(ipp) })
+	e.watchdog("WhoIsIPPort", func() { tsIP, ok = e.wrap.WhoIsIPPort(ipp) })
 	return tsIP, ok
 }
 func (e *watchdogEngine) Close() {

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -47,6 +46,7 @@ import (
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
 	"tailscale.com/wgengine/monitor"
+	"tailscale.com/wgengine/netstack"
 	"tailscale.com/wgengine/router"
 	"tailscale.com/wgengine/wgcfg"
 	"tailscale.com/wgengine/wglog"
@@ -96,6 +96,7 @@ type userspaceEngine struct {
 	linkMonOwned      bool       // whether we created linkMon (and thus need to close it)
 	linkMonUnregister func()     // unsubscribes from changes; used regardless of linkMonOwned
 	birdClient        BIRDClient // or nil
+	netstack          *netstack.Impl
 
 	testMaybeReconfigHook func() // for tests; if non-nil, fires if maybeReconfigWireguardLocked called
 
@@ -132,7 +133,6 @@ type userspaceEngine struct {
 	endpoints           []tailcfg.Endpoint
 	pendOpen            map[flowtrack.Tuple]*pendingOpenFlow // see pendopen.go
 	networkMapCallbacks map[*someHandle]NetworkMapCallback
-	tsIPByIPPort        map[netaddr.IPPort]netaddr.IP          // allows registration of IP:ports as belonging to a certain Tailscale IP for whois lookups
 	pongCallback        map[[8]byte]func(packet.TSMPPongReply) // for TSMP pong responses
 
 	// Lock ordering: magicsock.Conn.mu, wgLock, then mu.
@@ -189,6 +189,8 @@ type Config struct {
 	// BIRDClient, if non-nil, will be used to configure BIRD whenever
 	// this node is a primary subnet router.
 	BIRDClient BIRDClient
+
+	Netstack *netstack.Impl
 }
 
 func NewFakeUserspaceEngine(logf logger.Logf, listenPort uint16) (Engine, error) {
@@ -199,19 +201,12 @@ func NewFakeUserspaceEngine(logf logger.Logf, listenPort uint16) (Engine, error)
 	})
 }
 
-// NetstackRouterType is a gross cross-package init-time registration
-// from netstack to here, informing this package of netstack's router
-// type.
-var NetstackRouterType reflect.Type
-
 // IsNetstackRouter reports whether e is either fully netstack based
 // (without TUN) or is at least using netstack for routing.
 func IsNetstackRouter(e Engine) bool {
 	switch e := e.(type) {
 	case *userspaceEngine:
-		if reflect.TypeOf(e.router) == NetstackRouterType {
-			return true
-		}
+		return e.netstack.ProcessAll || e.netstack.ProcessSubnets
 	case *watchdogEngine:
 		return IsNetstackRouter(e.wrap)
 	}
@@ -273,6 +268,10 @@ func NewUserspaceEngine(logf logger.Logf, conf Config) (_ Engine, reterr error) 
 		confListenPort:   conf.ListenPort,
 		magicConnStarted: make(chan struct{}),
 		birdClient:       conf.BIRDClient,
+		netstack:         conf.Netstack,
+	}
+	if e.netstack != nil {
+		e.AddNetworkMapCallback(e.netstack.UpdateIPs)
 	}
 
 	if e.birdClient != nil {
@@ -1360,48 +1359,11 @@ func (e *userspaceEngine) setTSMPPongCallback(data [8]byte, cb func(packet.TSMPP
 	}
 }
 
-func (e *userspaceEngine) RegisterIPPortIdentity(ipport netaddr.IPPort, tsIP netaddr.IP) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.tsIPByIPPort == nil {
-		e.tsIPByIPPort = make(map[netaddr.IPPort]netaddr.IP)
-	}
-	e.tsIPByIPPort[ipport] = tsIP
-}
-
-func (e *userspaceEngine) UnregisterIPPortIdentity(ipport netaddr.IPPort) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if e.tsIPByIPPort == nil {
-		return
-	}
-	delete(e.tsIPByIPPort, ipport)
-}
-
-var whoIsSleeps = [...]time.Duration{
-	0,
-	10 * time.Millisecond,
-	20 * time.Millisecond,
-	50 * time.Millisecond,
-	100 * time.Millisecond,
-}
-
 func (e *userspaceEngine) WhoIsIPPort(ipport netaddr.IPPort) (tsIP netaddr.IP, ok bool) {
-	// We currently have a registration race,
-	// https://github.com/tailscale/tailscale/issues/1616,
-	// so loop a few times for now waiting for the registration
-	// to appear.
-	// TODO(bradfitz,namansood): remove this once #1616 is fixed.
-	for _, d := range whoIsSleeps {
-		time.Sleep(d)
-		e.mu.Lock()
-		tsIP, ok = e.tsIPByIPPort[ipport]
-		e.mu.Unlock()
-		if ok {
-			return tsIP, true
-		}
+	if e.netstack == nil {
+		return tsIP, false
 	}
-	return tsIP, false
+	return e.netstack.WhoIsIPPort(ipport)
 }
 
 // peerForIP returns the Node in the wireguard config

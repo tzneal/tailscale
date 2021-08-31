@@ -37,7 +37,6 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/netmap"
 	"tailscale.com/util/dnsname"
-	"tailscale.com/wgengine"
 	"tailscale.com/wgengine/filter"
 	"tailscale.com/wgengine/magicsock"
 )
@@ -54,12 +53,12 @@ type Impl struct {
 	// port other than accepting it and closing it.
 	ForwardTCPIn func(c net.Conn, port uint16)
 
-	ipstack *stack.Stack
-	linkEP  *channel.Endpoint
-	tundev  *tstun.Wrapper
-	e       wgengine.Engine
-	mc      *magicsock.Conn
-	logf    logger.Logf
+	ipstack      *stack.Stack
+	linkEP       *channel.Endpoint
+	tundev       *tstun.Wrapper
+	mc           *magicsock.Conn
+	logf         logger.Logf
+	tsIPByIPPort map[netaddr.IPPort]netaddr.IP // allows registration of IP:ports as belonging to a certain Tailscale IP for whois lookups
 
 	ProcessAll     bool
 	ProcessSubnets bool // whether we only want to handle subnet relaying
@@ -156,12 +155,7 @@ func (ns *Impl) wrapProtoHandler(h func(stack.TransportEndpointID, *stack.Packet
 
 // Start sets up all the handlers so netstack can start working. Implements
 // wgengine.FakeImpl.
-func (ns *Impl) Start(e wgengine.Engine) error {
-	if e == nil {
-		return errors.New("nil Engine")
-	}
-	ns.e = e
-	ns.e.AddNetworkMapCallback(ns.updateIPs)
+func (ns *Impl) Start() error {
 	// size = 0 means use default buffer size
 	const tcpReceiveBufferSize = 0
 	const maxInFlightConnectionAttempts = 16
@@ -213,6 +207,50 @@ func DNSMapFromNetworkMap(nm *netmap.NetworkMap) DNSMap {
 	return ret
 }
 
+func (ns *Impl) registerIPPortIdentity(ipport netaddr.IPPort, tsIP netaddr.IP) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.tsIPByIPPort == nil {
+		ns.tsIPByIPPort = make(map[netaddr.IPPort]netaddr.IP)
+	}
+	ns.tsIPByIPPort[ipport] = tsIP
+}
+
+func (ns *Impl) unregisterIPPortIdentity(ipport netaddr.IPPort) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+	if ns.tsIPByIPPort == nil {
+		return
+	}
+	delete(ns.tsIPByIPPort, ipport)
+}
+
+var whoIsSleeps = [...]time.Duration{
+	0,
+	10 * time.Millisecond,
+	20 * time.Millisecond,
+	50 * time.Millisecond,
+	100 * time.Millisecond,
+}
+
+func (ns *Impl) WhoIsIPPort(ipport netaddr.IPPort) (tsIP netaddr.IP, ok bool) {
+	// We currently have a registration race,
+	// https://github.com/tailscale/tailscale/issues/1616,
+	// so loop a few times for now waiting for the registration
+	// to appear.
+	// TODO(bradfitz,namansood): remove this once #1616 is fixed.
+	for _, d := range whoIsSleeps {
+		time.Sleep(d)
+		ns.mu.Lock()
+		tsIP, ok = ns.tsIPByIPPort[ipport]
+		ns.mu.Unlock()
+		if ok {
+			return tsIP, true
+		}
+	}
+	return tsIP, false
+}
+
 func (ns *Impl) updateDNS(nm *netmap.NetworkMap) {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
@@ -254,7 +292,7 @@ func ipPrefixToAddressWithPrefix(ipp netaddr.IPPrefix) tcpip.AddressWithPrefix {
 	}
 }
 
-func (ns *Impl) updateIPs(nm *netmap.NetworkMap) {
+func (ns *Impl) UpdateIPs(nm *netmap.NetworkMap) {
 	ns.atomicIsLocalIPFunc.Store(tsaddr.NewContainsIPFunc(nm.Addresses))
 	ns.updateDNS(nm)
 
@@ -569,8 +607,8 @@ func (ns *Impl) forwardTCP(client *gonet.TCPConn, clientRemoteIP netaddr.IP, wq 
 	defer server.Close()
 	backendLocalAddr := server.LocalAddr().(*net.TCPAddr)
 	backendLocalIPPort, _ := netaddr.FromStdAddr(backendLocalAddr.IP, backendLocalAddr.Port, backendLocalAddr.Zone)
-	ns.e.RegisterIPPortIdentity(backendLocalIPPort, clientRemoteIP)
-	defer ns.e.UnregisterIPPortIdentity(backendLocalIPPort)
+	ns.registerIPPortIdentity(backendLocalIPPort, clientRemoteIP)
+	defer ns.unregisterIPPortIdentity(backendLocalIPPort)
 	connClosed := make(chan error, 2)
 	go func() {
 		_, err := io.Copy(server, client)
@@ -656,7 +694,7 @@ func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, 
 		ns.logf("could not get backend local IP:port from %v:%v", backendLocalAddr.IP, backendLocalAddr.Port)
 	}
 	if isLocal {
-		ns.e.RegisterIPPortIdentity(backendLocalIPPort, dstAddr.IP())
+		ns.registerIPPortIdentity(backendLocalIPPort, dstAddr.IP())
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 
@@ -672,7 +710,7 @@ func (ns *Impl) forwardUDP(client *gonet.UDPConn, wq *waiter.Queue, clientAddr, 
 	}
 	timer := time.AfterFunc(idleTimeout, func() {
 		if isLocal {
-			ns.e.UnregisterIPPortIdentity(backendLocalIPPort)
+			ns.unregisterIPPortIdentity(backendLocalIPPort)
 		}
 		ns.logf("netstack: UDP session between %s and %s timed out", backendListenAddr, backendRemoteAddr)
 		cancel()

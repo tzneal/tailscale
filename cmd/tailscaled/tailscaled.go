@@ -327,7 +327,7 @@ func run() error {
 
 	opts := ipnServerOpts()
 	opts.DebugMux = debugMux
-	err = ipnserver.Run(ctx, logf, pol.PublicID.String(), ipnserver.FixedEngine(e))
+	err = ipnserver.Run(ctx, logf, pol.PublicID.String(), ipnserver.FixedEngine(e), opts)
 	// Cancelation is not an error: it is the only way to stop ipnserver.
 	if err != nil && err != context.Canceled {
 		logf("ipnserver.Run: %v", err)
@@ -385,7 +385,7 @@ func tryEngine(logf logger.Logf, linkMon *monitor.Mon, name string) (e wgengine.
 		log.Printf("Connecting to BIRD at %s ...", args.birdSocketPath)
 		conf.BIRDClient, err = createBIRDClient(args.birdSocketPath)
 		if err != nil {
-			return nil, false, err
+			return nil, nil, err
 		}
 	}
 	useNetstack := name == "userspace-networking"
@@ -457,7 +457,7 @@ func mustStartNetstack(logf logger.Logf, e wgengine.Engine) *netstack.Impl {
 	if err != nil {
 		log.Fatalf("netstack.Create: %v", err)
 	}
-	if err := ns.Start(e); err != nil {
+	if err := ns.Start(); err != nil {
 		log.Fatalf("failed to start netstack: %v", err)
 	}
 	return ns

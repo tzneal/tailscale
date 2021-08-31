@@ -193,9 +193,10 @@ func startIPNServer(ctx context.Context, logid string) error {
 			dev.Close()
 			return nil, fmt.Errorf("engine: %w", err)
 		}
-		onlySubnets := true
 		if wrapNetstack {
-			mustStartNetstack(logf, eng, onlySubnets)
+			ns := mustStartNetstack(logf, eng)
+			ns.ProcessAll = false
+			ns.ProcessSubnets = true
 		}
 		return wgengine.NewWatchdog(eng), nil
 	}

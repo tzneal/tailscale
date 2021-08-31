@@ -137,15 +137,6 @@ type Engine interface {
 	// the given IP and then call cb with its ping latency & method.
 	Ping(ip netaddr.IP, useTSMP bool, cb func(*ipnstate.PingResult))
 
-	// RegisterIPPortIdentity registers a given node (identified by its
-	// Tailscale IP) as temporarily having the given IP:port for whois lookups.
-	// The IP:port is generally a localhost IP and an ephemeral port, used
-	// while proxying connections to localhost.
-	RegisterIPPortIdentity(netaddr.IPPort, netaddr.IP)
-
-	// UnregisterIPPortIdentity removes a temporary IP:port registration.
-	UnregisterIPPortIdentity(netaddr.IPPort)
-
 	// WhoIsIPPort looks up an IP:port in the temporary registrations,
 	// and returns a matching Tailscale IP, if it exists.
 	WhoIsIPPort(netaddr.IPPort) (netaddr.IP, bool)
