@@ -680,6 +680,7 @@ type RegisterResponse struct {
 	NodeKeyExpired    bool   // if true, the NodeKey needs to be replaced
 	MachineAuthorized bool   // TODO(crawshaw): move to using MachineStatus
 	AuthURL           string // if set, authorization pending
+	Error             string // if set, authorization failed
 }
 
 // EndpointType distinguishes different sources of MapRequest.Endpoint values.
