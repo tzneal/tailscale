@@ -454,6 +454,8 @@ func (b *LocalBackend) setClientStatus(st controlclient.Status) {
 			b.logf("[v1] Received error: EOF")
 		} else {
 			b.logf("Received error: %v", st.Err)
+			e := st.Err
+			b.send(ipn.Notify{ErrMessage: &e})
 		}
 		return
 	}
