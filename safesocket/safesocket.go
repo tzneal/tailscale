@@ -57,10 +57,22 @@ func tailscaledStillStarting() bool {
 	return tailscaledProcExists()
 }
 
+// Fallback is a policy about whether a call to Connect should fall back to alternative connection paths.
+type Fallback int
+
+const (
+	// NoFallback means that Connect should only dial the provided path and port.
+	NoFallback Fallback = 0
+	// FallbackToIPN means that Connect may dial IPNExtension
+	// if connection via the provided path and port fail.
+	FallbackToIPN Fallback = 1
+)
+
 // Connect connects to either path (on Unix) or the provided localhost port (on Windows).
-func Connect(path string, port uint16) (net.Conn, error) {
+// fallback is the fallback connection policy.
+func Connect(path string, port uint16, fallback Fallback) (net.Conn, error) {
 	for {
-		c, err := connect(path, port)
+		c, err := connect(path, port, fallback)
 		if err != nil && tailscaledStillStarting() {
 			time.Sleep(250 * time.Millisecond)
 			continue

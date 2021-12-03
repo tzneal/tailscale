@@ -56,7 +56,18 @@ func defaultDialer(ctx context.Context, network, addr string) (net.Conn, error) 
 			return d.DialContext(ctx, "tcp", "localhost:"+strconv.Itoa(port))
 		}
 	}
-	return safesocket.Connect(TailscaledSocket, safesocket.WindowsLocalPort)
+	return safesocket.Connect(TailscaledSocket, safesocket.WindowsLocalPort, Fallback())
+}
+
+// Fallback returns the tailscaled connection fallback policy.
+func Fallback() safesocket.Fallback {
+	// If the user explicitly provided a different socket path, trust that they know
+	// what they're asking for, and don't fall back to IPNExtension.
+	// This allows the integration tests to run on a machine that is also running IPNExtension.
+	if TailscaledSocket != paths.DefaultTailscaledSocket() {
+		return safesocket.NoFallback
+	}
+	return safesocket.FallbackToIPN
 }
 
 var (

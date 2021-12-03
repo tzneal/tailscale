@@ -721,7 +721,7 @@ func (n *testNode) MustDown() {
 // over its localhost IPC mechanism. (Unix socket, etc)
 func (n *testNode) AwaitListening(t testing.TB) {
 	if err := tstest.WaitFor(20*time.Second, func() (err error) {
-		c, err := safesocket.Connect(n.sockFile, safesocket.WindowsLocalPort)
+		c, err := safesocket.Connect(n.sockFile, safesocket.WindowsLocalPort, safesocket.NoFallback)
 		if err != nil {
 			return err
 		}

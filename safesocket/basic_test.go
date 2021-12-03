@@ -48,7 +48,7 @@ func TestBasics(t *testing.T) {
 	}()
 
 	go func() {
-		c, err := Connect(sock, port)
+		c, err := Connect(sock, port, NoFallback)
 		if err != nil {
 			errs <- err
 			return

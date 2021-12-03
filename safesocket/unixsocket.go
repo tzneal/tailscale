@@ -23,7 +23,7 @@ import (
 )
 
 // TODO(apenwarr): handle magic cookie auth
-func connect(path string, port uint16) (net.Conn, error) {
+func connect(path string, port uint16, fallback Fallback) (net.Conn, error) {
 	if runtime.GOOS == "js" {
 		return nil, errors.New("safesocket.Connect not yet implemented on js/wasm")
 	}
@@ -32,7 +32,7 @@ func connect(path string, port uint16) (net.Conn, error) {
 	}
 	pipe, err := net.Dial("unix", path)
 	if err != nil {
-		if runtime.GOOS == "darwin" {
+		if runtime.GOOS == "darwin" && fallback == FallbackToIPN {
 			extConn, extErr := connectMacOSAppSandbox()
 			if extErr != nil {
 				return nil, fmt.Errorf("safesocket: failed to connect to %v: %v; failed to connect to Tailscale IPNExtension: %v", path, err, extErr)
